@@ -1,5 +1,13 @@
 import mongoose, { HydratedDocument, Schema } from "mongoose";
-import { GenderEnum, RoleEnum } from "../../Utils/enums/auth.enum";
+import {
+  GenderEnum,
+  ProviderEnum,
+  RoleEnum,
+} from "../../Utils/enums/auth.enum";
+import { generateHash } from "../../Utils/Security/hash";
+import { encrypt } from "../../Utils/Security/encryption";
+import { emailEvent } from "../../Utils/events/email.events";
+import { generateOTP } from "../../Utils/generateOTP";
 
 export interface IUser {
   firstName: string;
@@ -18,6 +26,10 @@ export interface IUser {
 
   gender: GenderEnum;
   role?: RoleEnum;
+  provider?: ProviderEnum;
+
+  changeCredentialsTime: Date;
+  profilePic: string;
 
   createAt: Date;
   updateAt?: Date;
@@ -44,12 +56,28 @@ export const userSchema = new Schema<IUser>(
       required: true,
       unique: true,
     },
-    password: { type: String, required: true },
+    password: {
+      type: String,
+      required: function (): boolean {
+        return this.provider === ProviderEnum.SYSTEM;
+      },
+    },
     confirmEmailOTP: String,
     confirmEmail: Date,
     resetpasswordOTP: String,
-    phone: String,
+    phone: {
+      type: String,
+      required: true,
+    },
     address: String,
+    changeCredentialsTime: Date,
+    profilePic: String,
+
+    provider: {
+      type: String,
+      enum: Object.values(ProviderEnum),
+      default: ProviderEnum.SYSTEM,
+    },
     gender: {
       type: String,
       enum: Object.values(GenderEnum),
@@ -78,5 +106,28 @@ userSchema
     return `${this.firstName} ${this.lastName}`;
   });
 
+userSchema.pre(
+  "save",
+  async function (this: HUserDocument & { wasBew: boolean }) {
+    this.wasBew = this.isNew;
+    if (this.isModified("password")) {
+      this.password = await generateHash(this.password);
+    }
+    if (this.isModified("phone")) {
+      this.phone = await encrypt(this.phone);
+    }
+  },
+);
+
+userSchema.post("save", async function () {
+  const that = this as HUserDocument & { wasBew: boolean };
+  if (that.wasBew) {
+    await emailEvent.emit("confirmEmail", {
+      otp: generateOTP(),
+      to: this.email,
+    });
+  }
+});
+
 export const UserModel = mongoose.model<IUser>("User", userSchema);
-export type HUserDocument = HydratedDocument<IUser>
+export type HUserDocument = HydratedDocument<IUser>;
